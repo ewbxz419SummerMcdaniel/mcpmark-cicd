@@ -1,0 +1,177 @@
+name: Pull Request Automation
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  code-quality:
+    name: code-quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm install
+      - name: Run ESLint
+        id: eslint
+        run: npm run lint
+        continue-on-error: true
+      - name: Run Prettier Check
+        id: prettier
+        run: npx prettier --check .
+        continue-on-error: true
+      - name: Post Code Quality Report
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const eslintOutput = `${{ steps.eslint.outputs.stdout }}`;
+            const prettierOutput = `${{ steps.prettier.outputs.stdout }}`;
+            const comment = `
+            ## Code Quality Report
+            ### ESLint Results:
+            ${eslintOutput || 'No output'}
+            ### Prettier Results:
+            ${prettierOutput || 'No output'}
+            `;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+  testing-suite:
+    name: testing-suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm install
+      - name: Run Tests with Coverage
+        id: tests
+        run: npm test -- --coverage
+        continue-on-error: true
+      - name: Generate Coverage Summary
+        id: coverage-summary
+        run: |
+          echo "coverage_summary=$(cat coverage/lcov-report/index.html | grep -o '<div class=\"summary\">.*</div>' | head -1)" >> $GITHUB_OUTPUT
+        continue-on-error: true
+      - name: Post Test Coverage Report
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const testOutput = `${{ steps.tests.outputs.stdout }}`;
+            const coverageSummary = `${{ steps.coverage-summary.outputs.coverage_summary }}`;
+            const comment = `
+            ## Test Coverage Report
+            ### Test Results:
+            ${testOutput || 'No output'}
+            ### Coverage Summary:
+            ${coverageSummary || 'No summary available'}
+            `;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+      - name: Upload Coverage Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+
+  security-scan:
+    name: security-scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm install
+      - name: Run Dependency Vulnerability Check
+        id: npm-audit
+        run: npm audit --json > npm-audit.json || true
+      - name: Scan for Secrets
+        id: secret-scan
+        uses: gitleaks/gitleaks-action@v2
+        with:
+          config: .gitleaks.toml
+          output: gitleaks-report.json
+        continue-on-error: true
+      - name: Post Security Scan Report
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let npmAuditOutput = 'No vulnerabilities found';
+            if (fs.existsSync('npm-audit.json')) {
+              const auditData = JSON.parse(fs.readFileSync('npm-audit.json', 'utf8'));
+              npmAuditOutput = `Found ${auditData.metadata.vulnerabilities.total} vulnerabilities`;
+            }
+            let secretScanOutput = 'No secrets found';
+            if (fs.existsSync('gitleaks-report.json')) {
+              const secretData = JSON.parse(fs.readFileSync('gitleaks-report.json', 'utf8'));
+              secretScanOutput = `Found ${secretData.length} potential secrets`;
+            }
+            const comment = `
+            ## Security Scan Report
+            ### Dependencies Vulnerabilities:
+            ${npmAuditOutput}
+            ### Secrets Scan:
+            ${secretScanOutput}
+            `;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+  build-validation:
+    name: build-validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm install
+      - name: Build Application
+        id: build
+        run: npm run build
+        continue-on-error: true
+      - name: Validate Endpoints (example)
+        id: endpoints
+        run: |
+          echo "Checking build output..."
+          ls -la build/ || echo "Build directory not found"
+        continue-on-error: true
+      - name: Post Build Validation
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const buildOutput = `${{ steps.build.outputs.stdout }}`;
+            const endpointsOutput = `${{ steps.endpoints.outputs.stdout }}`;
+            const comment = `
+            ## Build Validation
+            ### Build Results:
+            ${buildOutput || 'Build failed or no output'}
+            ### Endpoint Validation:
+            ${endpointsOutput || 'No endpoint validation performed'}
+            `;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts
+          path: build/
